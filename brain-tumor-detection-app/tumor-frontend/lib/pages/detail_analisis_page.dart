@@ -41,11 +41,11 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
 
   // --- STATE UNTUK 2D DYNAMIC SLICES ---
   int _axis2D = 2; // 0: Sagittal, 1: Coronal, 2: Axial
-  String _label2D = "all"; // all, netc, snfh, et, rc
+  String _label2D = "all"; // all, netc, snfh, et
 
-  double _sliceIdx = 75;
-  double _fetchSliceIdx = 75;
-  int _maxSlice = 155;
+  double _sliceIdx = 42;
+  double _fetchSliceIdx = 42;
+  int _maxSlice = 154;
   Timer? _debounceTimer;
 
   // --- STATE UNTUK 3D ---
@@ -55,8 +55,6 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
   int _quarterTurns = 0;
   bool _isInverted = false;
 
-  // --- STATE UNTUK METRIK (Fix Set C) ---
-  String _metricViewMode = "per_class"; // "per_class" atau "per_region"
 
   @override
   void initState() {
@@ -78,9 +76,14 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
   void _setupInitialSlices(Map data) {
     if (data.containsKey('shape')) {
       List shape = data['shape'];
+      List? peakSlices = data['peak_slices'];
       setState(() {
         _maxSlice = shape[_axis2D] - 1;
-        _sliceIdx = _maxSlice / 2;
+        if (peakSlices != null && peakSlices.length > _axis2D) {
+          _sliceIdx = (peakSlices[_axis2D] as num).toDouble();
+        } else {
+          _sliceIdx = (_maxSlice / 2).roundToDouble();
+        }
         _fetchSliceIdx = _sliceIdx;
       });
     }
@@ -89,11 +92,16 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
   void _onAxisChanged(int? newAxis) {
     if (newAxis != null) {
       final data = activeController.detailAnalysisData;
-      List shape = data['shape'] ?? [155, 240, 240];
+      List shape = data['shape'] ?? [240, 240, 155];
+      List? peakSlices = data['peak_slices'];
       setState(() {
         _axis2D = newAxis;
         _maxSlice = shape[_axis2D] - 1;
-        _sliceIdx = _maxSlice / 2;
+        if (peakSlices != null && peakSlices.length > _axis2D) {
+          _sliceIdx = (peakSlices[_axis2D] as num).toDouble();
+        } else {
+          _sliceIdx = (_maxSlice / 2).roundToDouble();
+        }
         _fetchSliceIdx = _sliceIdx;
       });
     }
@@ -131,6 +139,14 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
     Map paths = data['paths_3d'] ?? {};
     String key = _showBrain3D ? _label3D : "${_label3D}_nobrain";
     String rawPath = paths[key] ?? "";
+    if (rawPath.isEmpty && _label3D == "edema") {
+      String oldKey = _showBrain3D ? "snfh" : "snfh_nobrain";
+      rawPath = paths[oldKey] ?? "";
+    }
+    if (rawPath.isEmpty && _label3D == "snfh") {
+      String newKey = _showBrain3D ? "edema" : "edema_nobrain";
+      rawPath = paths[newKey] ?? "";
+    }
     if (rawPath.isEmpty) {
       rawPath = paths['all'] ?? "";
     }
@@ -487,7 +503,7 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
                                                         value: "netc",
                                                         child: PoppinsTextView(
                                                             value:
-                                                                "NETC (Merah)",
+                                                                "NETC (Magenta)",
                                                             size: 11,
                                                             color:
                                                                 Colors.black87,
@@ -498,7 +514,7 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
                                                         value: "snfh",
                                                         child: PoppinsTextView(
                                                             value:
-                                                                "SNFH (Biru)",
+                                                                "Edema (Kuning)",
                                                             size: 11,
                                                             color:
                                                                 Colors.black87,
@@ -508,17 +524,7 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
                                                     DropdownMenuItem(
                                                         value: "et",
                                                         child: PoppinsTextView(
-                                                            value: "ET (Hijau)",
-                                                            size: 11,
-                                                            color:
-                                                                Colors.black87,
-                                                            fontWeight:
-                                                                FontWeight
-                                                                    .w500)),
-                                                    DropdownMenuItem(
-                                                        value: "rc",
-                                                        child: PoppinsTextView(
-                                                            value: "RC (Ungu)",
+                                                            value: "ET (Cyan)",
                                                             size: 11,
                                                             color:
                                                                 Colors.black87,
@@ -553,7 +559,7 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
                                                       color: Colors.blue)),
                                               Expanded(
                                                 child: Slider(
-                                                  value: _sliceIdx,
+                                                  value: _sliceIdx.clamp(0, _maxSlice.toDouble()),
                                                   min: 0,
                                                   max: _maxSlice.toDouble(),
                                                   divisions: _maxSlice > 0
@@ -697,13 +703,11 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
                                               _build3DChip("Full", "all",
                                                   AppColors.blueDark),
                                               _build3DChip("NETC", "netc",
-                                                  const Color(0xff00ffff)),
-                                              _build3DChip("SNFH", "snfh",
-                                                  const Color(0xffe5c100)),
-                                              _build3DChip("ET", "et",
-                                                  const Color(0xffff0000)),
-                                              _build3DChip("RC", "rc",
                                                   const Color(0xffff00ff)),
+                                              _build3DChip("Edema", "edema",
+                                                  const Color(0xffffd700)),
+                                              _build3DChip("ET", "et",
+                                                  const Color(0xff00cfcf)),
                                             ],
                                           ),
                                         ],
@@ -725,17 +729,13 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
                 // ==========================================
                 // WIDGET KANAN: PANEL INFO & METRIK
                 // ==========================================
-                String modelFormatted = "-";
+                String modelFormatted = "RSU U²-Net+ (Attention Gate)";
                 if (data['model_type'] != null) {
-                  if (data['model_type'].toString().toLowerCase() ==
-                      'optimisasi') {
-                    modelFormatted = 'CKD-TransBTS Optimisasi (L5)';
-                  } else if (data['model_type'].toString().toLowerCase() ==
-                      'paper') {
-                    modelFormatted = 'CKD-TransBTS Paper';
+                  String mt = data['model_type'].toString().toLowerCase();
+                  if (mt.contains('u2net') || mt.contains('attention') || mt.contains('optimisasi') || mt.contains('paper')) {
+                    modelFormatted = 'RSU U²-Net+ (Attention Gate)';
                   } else {
-                    modelFormatted =
-                        data['model_type'].toString().toUpperCase();
+                    modelFormatted = data['model_type'].toString();
                   }
                 }
 
@@ -769,23 +769,19 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
                       ),
                       child: Builder(builder: (context) {
                         List<dynamic> detectedRegions =
-                            data['detected_regions'] ?? [1, 2, 3, 4];
+                            data['detected_regions'] ?? [1, 2, 3];
                         Map<int, Map<String, dynamic>> legendData = {
                           1: {
                             "label": "Necrotic Tumor Core (NETC)",
-                            "color": const Color(0xff00ffff)
+                            "color": const Color(0xffff00ff)
                           },
                           2: {
-                            "label": "Peritumoral Edema (SNFH)",
-                            "color": const Color(0xffe5c100)
+                            "label": "Peritumoral Edema (Edema)",
+                            "color": const Color(0xffffd700)
                           },
                           3: {
                             "label": "Enhancing Tumor (ET)",
-                            "color": const Color(0xffff0000)
-                          },
-                          4: {
-                            "label": "Resection Cavity (RC)",
-                            "color": const Color(0xffff00ff)
+                            "color": const Color(0xff00cfcf)
                           },
                         };
                         return Column(
@@ -1051,99 +1047,7 @@ class _DetailAnalisisPageState extends State<DetailAnalisisPage> {
     );
   }
 
-  Widget _tableCell(String text, {bool isHeader = false}) {
-    return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: Center(
-        child: PoppinsTextView(
-            value: text,
-            size: 11,
-            fontWeight: isHeader ? FontWeight.bold : FontWeight.w500,
-            color: isHeader ? Colors.black87 : Colors.black54),
-      ),
-    );
-  }
 
-  List<TableRow> _buildMetricRows(Map metrics) {
-    List<TableRow> rows = [];
-
-    if (_metricViewMode == 'per_class') {
-      // Mode Per-Class (NETC, SNFH, ET, RC, Mean)
-      Map perClass =
-          metrics.containsKey('per_class') ? metrics['per_class'] : metrics;
-
-      final order = ['NETC', 'SNFH', 'ET', 'RC', 'mean'];
-      for (var className in order) {
-        if (!perClass.containsKey(className)) continue;
-        var data = perClass[className];
-        bool isMeanRow = className == 'mean';
-        String label = isMeanRow ? 'Mean' : className;
-
-        String col1 = data.containsKey('dice')
-            ? (data['dice']?.toString() ?? '-')
-            : (data['recall']?.toString() ?? '-');
-        String col2 = data.containsKey('sens')
-            ? (data['sens']?.toString() ?? '-')
-            : (data['specificity']?.toString() ?? '-');
-        String col3 =
-            data.containsKey('hd95') ? (data['hd95']?.toString() ?? '-') : '-';
-
-        rows.add(TableRow(
-          decoration:
-              isMeanRow ? BoxDecoration(color: Colors.blue.shade50) : null,
-          children: [
-            _tableCell(label, isHeader: isMeanRow),
-            _tableCell(col1),
-            _tableCell(col2),
-            _tableCell(col3),
-          ],
-        ));
-      }
-    } else {
-      // Mode Per-Region BraTS Compound (ET, TC, WT, Mean BraTS 6)
-      Map perRegion = metrics.containsKey('per_region_brats')
-          ? metrics['per_region_brats']
-          : {};
-
-      final order = ['ET', 'TC', 'WT'];
-      for (var regionName in order) {
-        if (!perRegion.containsKey(regionName)) continue;
-        var data = perRegion[regionName];
-        String col1 = data['dice']?.toString() ?? '-';
-        String col2 = data['sens']?.toString() ?? '-';
-        String col3 = data['hd95']?.toString() ?? '-';
-
-        rows.add(TableRow(
-          children: [
-            _tableCell(regionName),
-            _tableCell(col1),
-            _tableCell(col2),
-            _tableCell(col3),
-          ],
-        ));
-      }
-
-      // Mean BraTS 6
-      if (metrics.containsKey('mean_brats_6') &&
-          metrics['mean_brats_6'] != null) {
-        var meanData = metrics['mean_brats_6'];
-        String col1 = meanData['dice']?.toString() ?? '-';
-        String col2 = meanData['sens']?.toString() ?? '-';
-        String col3 = meanData['hd95']?.toString() ?? '-';
-
-        rows.add(TableRow(
-          decoration: BoxDecoration(color: Colors.green.shade50),
-          children: [
-            _tableCell("Mean BraTS 6", isHeader: true),
-            _tableCell(col1),
-            _tableCell(col2),
-            _tableCell(col3),
-          ],
-        ));
-      }
-    }
-    return rows;
-  }
 
   Widget _buildSectionTitle(String title) {
     return PoppinsTextView(

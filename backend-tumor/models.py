@@ -36,16 +36,16 @@ class ActivityLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String)
-    role = Column(String)
+    role = Column(String, index=True)
     activity = Column(String)
     details = Column(String)
-    timestamp = Column(DateTime, default=datetime.now)
+    timestamp = Column(DateTime, default=datetime.now, index=True)
 
 class MRIScan(Base):
     __tablename__ = "mri_scans"
     
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"))
+    patient_id = Column(Integer, ForeignKey("patients.id"), index=True)
     
     jenis_mri = Column(String) # T1, T2, FLAIR
     catatan_teknis = Column(Text, nullable=True)
@@ -54,7 +54,7 @@ class MRIScan(Base):
     filepath_raw = Column(String)
     filepath_2d = Column(String, nullable=True)
     filepath_3d = Column(String, nullable=True)
-    upload_date = Column(DateTime, default=datetime.now)
+    upload_date = Column(DateTime, default=datetime.now, index=True)
     
     # Hasil Analisis AI
     hasil_prediksi = Column(String, default="Belum Dianalisis") 
@@ -63,7 +63,7 @@ class MRIScan(Base):
     detected_regions = Column(String, nullable=True)
 
     # ── Progress tracking (Fix Set D) ──
-    processing_status = Column(String, default="uploaded")
+    processing_status = Column(String, default="uploaded", index=True)
     processing_progress = Column(Integer, default=0)
     processing_message = Column(String, nullable=True)
     
@@ -73,10 +73,10 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id = Column(Integer, primary_key=True, index=True)
-    target_role = Column(String) 
+    target_role = Column(String, index=True) 
     title = Column(String)
     message = Column(String)
 
-    analysis_id = Column(Integer, ForeignKey("mri_scans.id"), nullable=True)
-    is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.now)
+    analysis_id = Column(Integer, ForeignKey("mri_scans.id"), nullable=True, index=True)
+    is_read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)

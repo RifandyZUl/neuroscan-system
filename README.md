@@ -1,24 +1,33 @@
 # 🧠 NeuroScan AI — 3D Brain Tumor Detection & Segmentation System
 
-[![System Status](https://img.shields.io/badge/Status-Production%20Live-success?style=flat-square&logo=nginx)](http://31.97.49.142)
-[![Python](https://img.shields.io/badge/Python-3.10-blue?style=flat-square&logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.5.1%20CPU-EE4C2C?style=flat-square&logo=pytorch)](https://pytorch.org)
-[![MONAI](https://img.shields.io/badge/MONAI-1.3.0-5C2D91?style=flat-square)](https://monai.io)
-[![Flutter](https://img.shields.io/badge/Flutter-3.x%20Web-02569B?style=flat-square&logo=flutter)](https://flutter.dev)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql)](https://postgresql.org)
-[![Docker](https://img.shields.io/badge/Docker-Compose%20v2-2496ED?style=flat-square&logo=docker)](https://docker.com)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![TensorFlow](https://img.shields.io/badge/TensorFlow-2.18+-FF6F00?style=flat-square&logo=tensorflow&logoColor=white)](https://tensorflow.org)
+[![Keras](https://img.shields.io/badge/Keras-3.x-D00000?style=flat-square&logo=keras&logoColor=white)](https://keras.io)
+[![Flutter](https://img.shields.io/badge/Flutter-3.x%20Web-02569B?style=flat-square&logo=flutter&logoColor=white)](https://flutter.dev)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://postgresql.org)
+[![Docker](https://img.shields.io/badge/Docker-Compose%20v2-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 
-**NeuroScan AI** adalah sistem berbasis kecerdasan buatan (*Deep Learning*) kelas medis yang dirancang untuk **deteksi dan segmentasi tumor otak 3D** dari data hasil pemindaian MRI (*Magnetic Resonance Imaging*). Sistem ini menyediakan platform berbasis web yang responsif untuk dokter spesialis saraf (Sp.S), radiolog (Sp.Rad), dan administrator medis dalam mengelola pasien, menganalisis irisan MRI 2D, serta melakukan rekonstruksi visualisasi tumor 3D secara presisi.
+**NeuroScan AI** adalah sistem kecerdasan buatan (*Deep Learning*) kelas medis yang dirancang untuk **deteksi dan segmentasi otomatis tumor otak 3D** dari data hasil pemindaian MRI (*Magnetic Resonance Imaging*). Sistem ini mengintegrasikan model deep learning mutakhir **RSU U²-Net+ (Attention Gate)** dengan antarmuka web modern berbasis Flutter untuk dokter spesialis saraf (Sp.S), radiolog (Sp.Rad), dan administrator medis.
 
 ---
 
-## 🌐 Live Production Access
+## 🎯 Kelas Segmentasi & Standar Visualisasi (BraTS 2023)
 
-Sistem telah di-deploy dan aktif di lingkungan produksi:
-- **Web Interface (Frontend)**: [http://31.97.49.142](http://31.97.49.142)
-- **API Documentation (Swagger UI)**: [http://31.97.49.142/api/docs](http://31.97.49.142/api/docs)
-- **VPS Hostinger**: Ubuntu 22.04 LTS (Hostinger KVM 2, 2 vCPUs, 8 GB RAM, 100 GB NVMe, 4GB SWAP)
+Sistem telah diselaraskan 100% dengan standar dataset BraTS 2023 dan model referensi Google Colab:
+
+| Komponen Tumor | Label / Channel | Warna Tampilan | Perilaku di 2D (Slice) | Perilaku di 3D (Volume) |
+| :--- | :---: | :---: | :--- | :--- |
+| **Necrotic Tumor Core (NETC)** | Label 1 / Ch 0 | **Magenta** (`#FF00FF`) | Terlihat di inti terdalam tumor pada irisan aktif | Inti solid di bagian terdalam lesi (opacity 0.95) |
+| **Peritumoral Edema** | Label 2 / Ch 1 | **Kuning** (`#FFD700`) | Massa pembengkakan luas di sekeliling inti tumor | Massa luar bervolume besar yang menyelubungi tumor (opacity 0.35) |
+| **Enhancing Tumor (ET)** | Label 3 / Ch 2 | **Cyan** (`#00FFFF`) | Nodul tumor aktif di sekeliling / tepi inti nekrotik | Cangkang/nodul aktif yang membungkus inti nekrotik (opacity 0.95) |
+
+### 🩻 Urutan Modalitas Input MRI
+Sesuai konvensi standar `dataset.json`:
+- `_0000`: **T1c** (T1-weighted contrast-enhanced)
+- `_0001`: **T1n** (T1-weighted non-contrast)
+- `_0002`: **T2f** (T2-weighted FLAIR)
+- `_0003`: **T2w** (T2-weighted)
 
 ---
 
@@ -27,198 +36,196 @@ Sistem telah di-deploy dan aktif di lingkungan produksi:
 ```mermaid
 graph TB
     subgraph "Client Layer (Web Browser)"
-        USER["👤 Browser / Client"]
-        FLUTTER["📱 Flutter Web App<br/>(GetX, get_storage, 2D/3D Viewer)"]
+        USER["👤 Pengguna (Dokter / Radiolog / Admin)"]
+        FLUTTER["📱 Flutter Web App<br/>(GetX, Multi-Axis 2D & 3D Plotly Viewer)"]
     end
 
-    subgraph "Server Infrastructure (Hostinger VPS - 31.97.49.142)"
-        NGINX["🌐 Nginx Reverse Proxy<br/>Port 80 (HTTP)"]
-        
-        subgraph "Docker Container Environment"
-            API["⚙️ FastAPI Backend<br/>(Container: axon-backend | Port: 8000)"]
-            DB[("🗄️ PostgreSQL 15<br/>(Container: axon-postgres | Port: 5433)")]
-            AI["🧠 PyTorch / MONAI Inference Engine<br/>TransBTS & L5 Cosine Models"]
-        end
-
-        STORAGE["📁 Persistent Storage<br/>(/app/uploads & NIfTI cache)"]
+    subgraph "Server Infrastructure (Docker)"
+        API["⚙️ FastAPI Backend<br/>(Container: axon-backend | Port: 8000)"]
+        DB[("🗄️ PostgreSQL 15<br/>(Container: axon-postgres | Port: 5433)")]
+        AI["🧠 TensorFlow / Keras Engine<br/>RSU U²-Net+ (Attention Gate)"]
+        STORAGE["📁 Persistent Storage<br/>(Volume Scans, Output NIfTI, & 3D HTML)"]
     end
 
-    USER -->|"http://31.97.49.142"| NGINX
-    NGINX -->|"location /"| FLUTTER
-    NGINX -->|"location /api/"| API
+    USER -->|"HTTP / Web Interface"| FLUTTER
+    FLUTTER -->|"REST API Requests"| API
     API --> DB
     API --> AI
     API --> STORAGE
 ```
 
 ### Alur Kerja Utama (*Core Workflow*):
-1. **Autentikasi User**: Pengguna melakukan login berdasarkan role (Admin, Dokter, Radiolog). Token JWT diterbitkan dan disimpan secara aman menggunakan `get_storage`.
-2. **Unggah MRI Scan**: Radiolog mengunggah file pemindaian MRI dalam format ZIP (berisi file NIfTI `.nii` / `.nii.gz` modalitas T1, T2, FLAIR).
-3. **Inference & Segmentasi AI**: FastAPI menjalankan worker asinkron yang memanfaatkan PyTorch & MONAI untuk memproses volume MRI 3D menggunakan model AI TransBTS / L5 Cosine.
-4. **Dynamic Slice Selection**: Sistem secara otomatis menentukan irisan (*slice*) 2D optimal dengan luas wilayah tumor terbesar (*maximum tumor area*) untuk disajikan ke dokter.
-5. **Visualisasi 3D Interaktif**: Membangun mesh/objek 3D tumor dan area sekitar otak yang dapat diputar, di-zoom, dan dianalisis melalui web viewer.
+1. **Autentikasi & RBAC**: Pengguna login berdasarkan role (Admin, Dokter, Radiolog) dengan token JWT dan otorisasi ketat.
+2. **Unggah MRI Scan**: Radiolog mengunggah file pemindaian MRI dalam format ZIP berisi 4 modalitas NIfTI (`.nii` / `.nii.gz`).
+3. **Inference & Segmentasi AI**: FastAPI memproses volume MRI 3D menggunakan model **RSU U²-Net+ (Attention Gate)** berformat `channels_first (4, 160, 160, 16)` dengan sliding window inference dan standarisasi Z-score per slice.
+4. **Ekstraksi Mesh 3D & Slice 2D**: Hasil segmentasi diubah menjadi file NIfTI per-kelas, mesh 3D Plotly WebGL (dengan opsi brain shell on/off), dan irisan 2D multi-aksial.
+5. **Dynamic Peak Tumor Auto-Detection**: Backend secara otomatis menghitung irisan puncak tumor (`peak_slices`) untuk ketiga sudut pandang (Axial, Coronal, Sagittal) sehingga saat pertama kali dibuka, pengguna langsung disajikan irisan dengan lesi tumor paling jelas.
 
 ---
 
-## ✨ Fitur Utama (*Key Features*)
+## ✨ Fitur Unggulan (*Key Features*)
 
-- 🔐 **Multi-Role Access Control (RBAC)**: Hak akses khusus sesuai peran:
-  - **Admin**: Manajemen akun staff/dokter, audit trail activity log, dan sistem proteksi.
-  - **Radiolog (Sp.Rad)**: Registrasi pasien baru, upload data scan MRI 3D, dan pemicu analisis AI.
-  - **Dokter Spesialis (Sp.S)**: Review hasil segmentasi AI, pemeriksaan visual 2D/3D, pembaruan catatan klinis pasien.
-- 🩻 **Analisis Irisan 2D Multi-Aksial**: Menampilkan irisan aksial, sagital, dan koronal dengan fitur zoom, rotasi, serta penyesuaian kontras (*contrast inversion*).
-- 🧊 **Visualisasi Volume 3D Interaktif**: Rekonstruksi 3D tumor otak (NETC, SNFH, ET, RC) langsung dari browser.
-- 🎯 **Dynamic Tumor Slice Auto-Detection**: Algoritma cerdas yang memilih slice dengan tumor terluas atau volume otak terbesar secara otomatis.
-- 📊 **Audit Trail & Monitoring Activity**: Pencatatan riwayat aktivitas pengguna untuk transparansi medis dan keamanan data.
-- 🛡️ **Security Hardening**: Proteksi dari kerentanan Zip-Slip (Path Traversal), SQL Injection via SQLAlchemy ORM, Hashing Password Bcrypt, dan CORS Hardening.
+- 🔐 **Multi-Role Access Control (RBAC)**:
+  - **Admin**: Manajemen akun staff, audit trail activity log, dan sistem proteksi.
+  - **Radiolog (Sp.Rad)**: Registrasi pasien baru, upload data scan MRI 3D, dan pemantauan antrean AI.
+  - **Dokter Spesialis (Sp.S)**: Review hasil segmentasi AI, pemeriksaan visual 2D/3D interaktif, serta input catatan medis.
+- 🩻 **Interactive 2D Slice Viewer**:
+  - Navigasi 3 sudut pandang: **Axial**, **Coronal**, dan **Sagittal**.
+  - Deteksi irisan puncak tumor otomatis (*auto-center on tumor*).
+  - Kontrol lengkap: slider slice real-time dengan debouncing, filter layer kelas tumor, zoom in/out, rotasi, dan inversi kontras.
+- 🧊 **3D WebGL Volume Render**:
+  - Visualisasi 3D tumor otak (NETC, Edema, ET) berbasis Plotly WebGL.
+  - Chip pemilih kelas (*Full*, *NETC*, *Edema*, *ET*) dan toggle struktur transparan jaringan otak (*Brain Shell*).
+- ⚡ **Database & Query Performance Hardened**:
+  - Pencegahan masalah **N+1 Query** dengan SQLAlchemy `joinedload`.
+  - Penambahan indeks database pada Foreign Keys, status pemrosesan, role, dan timestamp.
+  - Pembatasan aman (*query limiting*) pada endpoint polling notifikasi dan log aktivitas.
+- 🛡️ **Security Hardening**:
+  - Proteksi dari eksploitasi Zip-Slip (*Path Traversal*).
+  - Password hashing dengan Bcrypt.
+  - SQL Injection prevention via SQLAlchemy ORM.
+  - CORS header hardening untuk integrasi Flutter Web.
 
 ---
 
 ## 🛠️ Technology Stack
 
-| Layer | Teknologi | Deskripsi |
-|-------|-----------|-----------|
-| **Frontend Framework** | [Flutter 3.x Web](https://flutter.dev/) | Framework UI cross-platform berbasis Dart |
-| **State Management** | [GetX](https://pub.dev/packages/get) & `get_storage` | Manajemen state reactive dan penyimpanan session JWT |
-| **Backend API** | [FastAPI](https://fastapi.tiangolo.com/) | REST API framework performa tinggi berbasis Python 3.10 |
-| **AI / Machine Learning** | [PyTorch 2.5.1](https://pytorch.org/) & [MONAI 1.3.0](https://monai.io/) | Deep Learning framework untuk segmentasi citra medis 3D |
-| **Database** | [PostgreSQL 15](https://www.postgresql.org/) | Relational Database Management System |
-| **ORM** | [SQLAlchemy](https://www.sqlalchemy.org/) | Python Object Relational Mapper |
-| **Containerization** | [Docker](https://www.docker.com/) & Docker Compose | Kontainerisasi backend dan database |
-| **Web Server / Proxy** | [Nginx](https://nginx.org/) | Reverse proxy, SSL handling, & static content hosting |
+| Layer | Komponen / Library | Deskripsi |
+|-------|-------------------|-----------|
+| **Frontend** | [Flutter 3.x Web](https://flutter.dev/) | Cross-platform web app dengan CanvasKit renderer |
+| **State Management** | [GetX](https://pub.dev/packages/get) | Reactive state management & routing |
+| **Backend Framework** | [FastAPI](https://fastapi.tiangolo.com/) | REST API performa tinggi berbasis Python 3.10+ |
+| **Deep Learning** | [TensorFlow 2.18](https://tensorflow.org/) & [Keras 3](https://keras.io/) | Arsitektur RSU U²-Net+ dengan Attention Gates |
+| **Medical Imaging** | [NiBabel](https://nipy.org/nibabel/) & [Scikit-Image](https://scikit-image.org/) | Pembacaan NIfTI & ekstraksi permukaan 3D (Marching Cubes) |
+| **3D Visualization** | [Plotly](https://plotly.com/python/) | WebGL interactive 3D mesh rendering |
+| **Database** | [PostgreSQL 15](https://www.postgresql.org/) / SQLite | Relational Database Management System |
+| **ORM** | [SQLAlchemy](https://www.sqlalchemy.org/) | Python Object Relational Mapper dengan eager loading |
+| **Containerization** | [Docker](https://www.docker.com/) & Docker Compose | Kontainerisasi backend & database terisolasi |
 
 ---
 
-## 📁 Struktur Repositori (*Repository Structure*)
+## 📁 Struktur Repositori
 
 ```
-NeuroScanv2/
-├── README.md                      # Dokumentasi Utama Repositori
-├── project_final_documentation.md # Dokumentasi Teknis Deployment & Maintenance VPS
-├── demo_api.py                    # Script Demo Pengujian REST API via Python
+SistemUjiCoba/
+├── .gitignore                         # Konfigurasi ignoransi file git (model weights, db, temp)
+├── README.md                          # Dokumentasi Utama Repositori
+├── dataset.json                       # Konfigurasi dataset & modality mapping BraTS 2023
 │
-├── backend-tumor/                 # Service Backend (FastAPI + PyTorch + PostgreSQL)
-│   ├── README.md                  # Dokumentasi Spesifik Backend
-│   ├── main.py                    # Aplikasi Utama FastAPI & Engine AI
-│   ├── models.py                  # Skema Database SQLAlchemy
-│   ├── schemas.py                 # Schema Pydantic Request/Response
-│   ├── auth.py                    # Otentikasi JWT & Hashing Bcrypt
-│   ├── database.py                # Koneksi & Session Database
-│   ├── seed.py                    # Script Inisialisasi Data Awal (Users & Patients)
-│   ├── Dockerfile                 # Konfigurasi Build Container Backend
-│   ├── docker-compose.yml         # Orchestration Container FastAPI & Postgres
-│   ├── requirements.txt           # Dependency Python
-│   ├── .env.example               # Template Variabel Lingkungan
-│   ├── best_model.pth             # Bobot Model AI Paper TransBTS (~348 MB)
-│   └── L5FINAL3_COSINE_best_model.pth # Bobot Model AI Optimisasi L5 (~4 MB)
+├── backend-tumor/                     # Service Backend (FastAPI + TensorFlow + Database)
+│   ├── .gitignore                     # Aturan ignore spesifik backend
+│   ├── Dockerfile                     # Konfigurasi container backend
+│   ├── docker-compose.yml             # Orchestration FastAPI & PostgreSQL
+│   ├── requirements.txt               # Dependency Python
+│   ├── main.py                        # Endpoint REST API & pipeline AI
+│   ├── models.py                      # Skema tabel database SQLAlchemy
+│   ├── schemas.py                     # Schema validasi Pydantic
+│   ├── auth.py                        # Autentikasi JWT & hash password
+│   ├── database.py                    # Koneksi engine & session database
+│   ├── seed.py                        # Inisialisasi data awal (Users & Patients)
+│   ├── checkpoints/                   # Direktori bobot model AI (model_weights.weights.h5)
+│   │   └── .gitkeep
+│   └── models_ai/                     # Engine Deep Learning
+│       ├── __init__.py
+│       ├── u2net_model.py             # Definisi arsitektur RSU U²-Net+ (Attention Gate)
+│       └── inference.py               # Preprocessing, sliding window predict, & postprocessing
 │
-└── brain-tumor-detection-app/     # Service Frontend (Flutter Web)
-    ├── README.md                  # Dokumentasi Spesifik Frontend
-    └── tumor-frontend/            # Source Code Flutter Web Project
-        ├── README.md              # Developer Quick Reference Frontend
-        ├── pubspec.yaml           # Dependencies Flutter / Dart
-        ├── lib/                   # Kode Sumber UI, Controllers, & Services
-        └── web/                   # Entry point Web & CanvasKit assets
+└── brain-tumor-detection-app/         # Service Frontend (Flutter Web)
+    └── tumor-frontend/                # Source Code Aplikasi Flutter
+        ├── pubspec.yaml               # Dependencies Flutter & Dart
+        ├── lib/
+        │   ├── main.dart              # Entrypoint aplikasi
+        │   ├── controllers/           # GetX Controllers (Auth, Dokter, Radiolog)
+        │   ├── pages/                 # Halaman UI (Dashboard, Detail Analisis, dll.)
+        │   └── utils/                 # API Config, App Colors, Helpers
+        └── web/                       # Konfigurasi web & index.html
 ```
 
 ---
 
 ## 🚀 Panduan Memulai (*Quick Start Guide*)
 
-### Prasyarat (*Prerequisites*)
-- **Git** (versi terbaru)
-- **Docker Desktop** (untuk pengujian backend & database lokal)
-- **Flutter SDK** `>=3.0.0` (opsional jika ingin mengembangkan frontend)
-- **Python** `3.10+` (opsional jika ingin menjalankan backend tanpa Docker)
+### 1. Prasyarat (*Prerequisites*)
+- [Git](https://git-scm.com/)
+- [Docker Desktop](https://www.docker.com/)
+- [Flutter SDK](https://flutter.dev/) `>= 3.0.0` (jika menjalankan frontend secara lokal)
+- Model checkpoint `model_weights.weights.h5` diletakkan di dalam folder `backend-tumor/checkpoints/`
 
 ---
 
-### Cara 1: Menjalankan Seluruh Sistem dengan Docker Compose (Direkomendasikan)
+### 2. Menjalankan Backend dengan Docker Compose
 
-1. **Clone Repositori**:
-   ```bash
-   git clone https://github.com/nabilaekasd/backend-tumor.git
-   cd NeuroScanv2/backend-tumor
+1. **Pastikan file bobot model tersedia**:
+   Letakkan file `model_weights.weights.h5` pada:
+   ```
+   backend-tumor/checkpoints/model_weights.weights.h5
    ```
 
-2. **Konfigurasi Environment**:
-   Salin file `.env.example` menjadi `.env`:
+2. **Jalankan Docker Compose**:
    ```bash
-   cp .env.example .env
-   ```
-
-3. **Jalankan Backend & Database**:
-   ```bash
+   cd backend-tumor
    docker compose up -d --build
    ```
-   *Catatan: Proses build pertama membutuhkan waktu 5-15 menit untuk mengunduh dependency PyTorch & MONAI.*
 
-4. **Inisialisasi Database (Seeding)**:
+3. **Inisialisasi Data Default (Seeding)**:
    ```bash
    docker exec -it axon-backend python seed.py
    ```
 
-5. **Akses API Documentation**:
-   Buka browser dan navigasi ke: [http://localhost:8000/docs](http://localhost:8000/docs)
+4. **Akses Dokumentasi API Swagger**:
+   Buka browser di: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
 
-### Cara 2: Menjalankan Frontend Flutter Web (Lokal Development)
+### 3. Menjalankan Frontend Flutter Web
 
-1. Navigasi ke folder frontend:
+1. **Masuk ke direktori frontend**:
    ```bash
    cd brain-tumor-detection-app/tumor-frontend
    ```
 
-2. Unduh packages/dependencies:
+2. **Unduh dependencies**:
    ```bash
    flutter pub get
    ```
 
-3. Jalankan aplikasi di Google Chrome:
+3. **Jalankan aplikasi di browser Chrome**:
    ```bash
    flutter run -d chrome
    ```
 
 ---
 
-## 🔑 Kredensial Default (*Default Credentials*)
+## 🔑 Kredensial Pengguna Default
 
-Setelah me-run script `seed.py`, Anda dapat login menggunakan kredensial default berikut:
+Gunakan kredensial berikut setelah menjalankan `seed.py`:
 
 | Peran (*Role*) | Username | Password | Deskripsi Akses |
 |----------------|----------|----------|-----------------|
-| **Administrator** | `admin` | `admin123` | Akses penuh manajemen user & log sistem |
-| **Dokter Saraf** | `dokter` | `password123` | Akses review riwayat scan & update catatan medis |
-| **Radiolog** | `radiolog` | `password123` | Akses registrasi pasien & upload MRI scan |
+| **Administrator** | `admin` | `admin123` | Manajemen pengguna, audit trail activity log |
+| **Dokter Spesialis** | `dokter` | `password123` | Review hasil segmentasi 2D/3D & catatan medis |
+| **Radiolog** | `radiolog` | `password123` | Registrasi pasien baru & upload citra scan MRI |
 
 ---
 
-## 🔌 API Endpoints Summary
+## 🔌 Rangkuman REST API Endpoints
 
 | Method | Endpoint | Deskripsi | Hak Akses |
-|--------|----------|-----------|-----------|
-| `POST` | `/token/` | Login & mendapatkan JWT Access Token | Public |
-| `GET` | `/users/me/` | Mengambil data profil user terotentikasi | All Roles |
-| `GET` | `/patients/` | Mengambil daftar data pasien | All Roles |
-| `POST` | `/patients/` | Registrasi data pasien baru | Admin, Radiolog |
-| `POST` | `/upload-mri/` | Unggah file scan MRI 3D (ZIP) & jalankan segmentasi AI | Radiolog |
-| `GET` | `/scan/{scan_id}/status` | Checking status & persentase progres pemrosesan AI | All Roles |
-| `GET` | `/analisis/{id}/slice` | Mengambil irisan gambar 2D MRI (Sagittal/Coronal/Axial) | All Roles |
-| `GET` | `/analisis/{id}/info` | Mengambil detail metrik evaluasi & info scan | All Roles |
-| `GET` | `/dashboard-summary/` | Mengambil statistik ringkasan dashboard | Admin, Radiolog |
+|:---|:---|:---|:---|
+| `POST` | `/token/` | Autentikasi & penerbitan token JWT | Public |
+| `GET` | `/users/me/` | Mengambil data profil user aktif | Authenticated |
+| `GET` | `/patients/` | Mengambil daftar seluruh pasien | Admin, Radiolog |
+| `POST` | `/patients/` | Registrasi pasien baru | Admin, Radiolog |
+| `POST` | `/upload-mri/` | Unggah file ZIP 4 modalitas MRI & mulai analisis AI | Radiolog |
+| `GET` | `/scan/{scan_id}/status` | Cek status & persentase progres pemrosesan AI | Authenticated |
+| `GET` | `/riwayat-semua/` | Mengambil riwayat semua scan (dioptimalkan dengan JOIN) | Authenticated |
+| `GET` | `/analisis/{id}` | Detail lengkap hasil analisis, shape, & `peak_slices` | Authenticated |
+| `GET` | `/analisis/{id}/slice` | Render gambar PNG irisan 2D beroverlay tumor | Authenticated |
+| `GET` | `/dashboard-summary/` | Statistik ringkasan pasien & status pemrosesan | Admin, Radiolog |
 | `GET` | `/logs/` | Mengambil audit trail log aktivitas pengguna | Admin |
-
----
-
-## 📄 Dokumentasi Terkait
-
-- 📗 **[Backend Technical Specs](file:///c:/Sempro/NeuroScanv2/backend-tumor/README.md)**: Panduan detail arsitektur FastAPI, PyTorch, SQLAlchemy, dan endpoint REST API.
-- 📘 **[Frontend Technical Specs](file:///c:/Sempro/NeuroScanv2/brain-tumor-detection-app/README.md)**: Panduan detail arsitektur Flutter Web, GetX, dan visualisasi 3D.
-- 📙 **[Deployment & Production Guide](file:///c:/Sempro/NeuroScanv2/project_final_documentation.md)**: Laporan lengkap deployment VPS Hostinger, Nginx reverse proxy, backup cron job, dan panduan maintenance server.
 
 ---
 
 ## 🛡️ Lisensi & Hak Cipta
 
-Copyright © 2026 **NeuroScan AI Team**. All Rights Reserved.
+Hak Cipta © 2026 **NeuroScan AI Team**. Seluruh hak cipta dilindungi undang-undang.

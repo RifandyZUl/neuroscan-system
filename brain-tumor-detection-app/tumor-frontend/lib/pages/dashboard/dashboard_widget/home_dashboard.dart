@@ -1,5 +1,4 @@
 import 'package:axon_vision/controllers/dashboard_controller.dart';
-import 'package:axon_vision/pages/dashboard/dashboard_widget/dashboard_tabel_analisis.dart';
 import 'package:axon_vision/pages/dashboard/dashboard_widget/dashboard_tabel_data_pasien.dart';
 import 'package:axon_vision/pages/global_widgets/custom/custom_flat_button.dart';
 import 'package:axon_vision/pages/global_widgets/text_fonts/poppins_text_view.dart';
@@ -101,43 +100,7 @@ class Home extends StatelessWidget {
                 : const DashboardTabelDataPasien(isHideID: true),
           ),
 
-          SpaceSizer(vertical: 4),
-          // HEADER SCAN ANALISIS DAN TOMBOL REFRESH
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              PoppinsTextView(
-                value: 'Scan Sedang Dianalisis',
-                size: SizeConfig.safeBlockHorizontal * 1.0,
-                fontWeight: FontWeight.bold,
-              ),
-              CustomFlatButton(
-                icon: Icons.refresh,
-                colorIconImage: AppColors.blueDark,
-                radius: 1.0,
-                text: 'Refresh Status',
-                onTap: () {},
-                width: SizeConfig.safeBlockHorizontal * 10,
-                height: SizeConfig.safeBlockVertical * 4,
-                backgroundColor: AppColors.white,
-                borderColor: AppColors.blueDark,
-                textColor: AppColors.blueDark,
-                textSize: SizeConfig.safeBlockHorizontal * 0.75,
-              ),
-            ],
-          ),
-          SpaceSizer(vertical: 1),
-
-          // TABEL SCAN ANALISIS
-          Container(
-            decoration: BoxDecoration(
-              border: Border.all(color: AppColors.greyDisabled),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            width: double.infinity,
-            child: const DashboardTabelAnalisis(),
-          ),
-          SpaceSizer(vertical: 5),
+          SpaceSizer(vertical: 2),
         ],
       ),
     );

@@ -820,37 +820,19 @@ class RadiologPatientView extends GetView<RadiologController> {
         const SizedBox(height: 8),
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: const Color(0xFFF8FAFC),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: Colors.grey[200]!, width: 1.5),
           ),
-          child: DropdownButtonHideUnderline(
-            child: Obx(() => DropdownButton<String>(
-                  value: controller.selectedModelType.value,
-                  isExpanded: true,
-                  style: GoogleFonts.poppins(
-                    fontSize: 13,
-                    color: Colors.black87,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  items: const [
-                    DropdownMenuItem(
-                      value: 'optimisasi',
-                      child: Text('CKD-TransBTS Optimisasi (L5)'),
-                    ),
-                    DropdownMenuItem(
-                      value: 'paper',
-                      child: Text('CKD-TransBTS Paper'),
-                    ),
-                  ],
-                  onChanged: (v) {
-                    if (v != null) {
-                      controller.selectedModelType.value = v;
-                    }
-                  },
-                )),
+          child: Text(
+            'RSU U²-Net+ (Attention Gate)',
+            style: GoogleFonts.poppins(
+              fontSize: 13,
+              color: Colors.black87,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
       ],

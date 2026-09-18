@@ -86,7 +86,7 @@ class RadiologController extends GetxController {
   var selectedJenisMRI = "T1 Weighted".obs;
   var selectedFile = Rxn<PlatformFile>();
   var selectedFileName = "".obs;
-  var selectedModelType = "optimisasi".obs;
+  var selectedModelType = "u2net_attention".obs;
 
   TextEditingController myUsernameC = TextEditingController();
   TextEditingController myFullNameC = TextEditingController();

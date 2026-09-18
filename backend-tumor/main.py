@@ -7,11 +7,12 @@ from fastapi.staticfiles import StaticFiles
 from urllib.parse import unquote
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from database import SessionLocal, engine
 from datetime import datetime
 from sqlalchemy import func
 import os
+import re
 import time
 import zipfile
 import auth
@@ -29,19 +30,11 @@ from matplotlib.colors import ListedColormap
 import plotly.graph_objects as go
 from skimage import measure
 from scipy.ndimage import gaussian_filter, distance_transform_edt, binary_erosion
-import torch
 from datetime import datetime, timezone
 import pytz
 
-from models_ckd.inference import predict_segmentation
-
-try:
-    torch.serialization.add_safe_globals([np._core.multiarray.scalar])
-except AttributeError:
-    try:
-        torch.serialization.add_safe_globals([np.core.multiarray.scalar])
-    except AttributeError:
-        pass
+# pyrefly: ignore [missing-import]
+from models_ai.inference import predict_segmentation
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,20 +44,42 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# CORS Hardening
-cors_origins_raw = os.getenv("CORS_ORIGINS", "*")
-CORS_ORIGINS = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
-
+# CORS Configuration
+# Catatan: allow_origins=["*"] tidak kompatibel dengan allow_credentials=True.
+# Token autentikasi dikirim via Authorization header (Bearer JWT), bukan cookie,
+# sehingga allow_credentials=False aman digunakan.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.on_event("startup")
+def cleanup_orphaned_scans():
+    db = SessionLocal()
+    try:
+        orphaned = db.query(models.MRIScan).filter(
+            models.MRIScan.processing_status.in_([
+                "uploaded", "loading_model", "preprocessing", "running_inference",
+                "computing_metrics", "rendering_3d", "saving_results"
+            ])
+        ).all()
+        for scan in orphaned:
+            scan.processing_status = "failed"
+            scan.processing_progress = -1
+            scan.processing_message = "Proses terhenti saat restart server. Silakan upload ulang file."
+        if orphaned:
+            db.commit()
+            print(f"[STARTUP] Membersihkan {len(orphaned)} scan terhenti dari restart sebelumnya.")
+    except Exception as e:
+        print(f"[STARTUP] Cleanup error: {e}")
+    finally:
+        db.close()
 app.mount("/static", StaticFiles(directory=UPLOAD_DIR), name="static")
 
 def get_db():
@@ -231,8 +246,20 @@ def _hd95(p_mask, g_mask):
     p_sum, g_sum = int(p_mask.sum()), int(g_mask.sum())
     if p_sum == 0 and g_sum == 0: return 0.0
     if p_sum == 0 or g_sum == 0: return float("nan")
-    ps = np.logical_xor(p_mask, binary_erosion(p_mask, border_value=1))
-    ts = np.logical_xor(g_mask, binary_erosion(g_mask, border_value=1))
+
+    # Crop ke bounding box voxels aktif untuk kalkulasi EDT super cepat
+    union_mask = p_mask | g_mask
+    nz = np.where(union_mask)
+    margin = 5
+    x_min, x_max = max(0, int(nz[0].min()) - margin), min(union_mask.shape[0], int(nz[0].max()) + 1 + margin)
+    y_min, y_max = max(0, int(nz[1].min()) - margin), min(union_mask.shape[1], int(nz[1].max()) + 1 + margin)
+    z_min, z_max = max(0, int(nz[2].min()) - margin), min(union_mask.shape[2], int(nz[2].max()) + 1 + margin)
+
+    p_sub = p_mask[x_min:x_max, y_min:y_max, z_min:z_max]
+    g_sub = g_mask[x_min:x_max, y_min:y_max, z_min:z_max]
+
+    ps = np.logical_xor(p_sub, binary_erosion(p_sub, border_value=1))
+    ts = np.logical_xor(g_sub, binary_erosion(g_sub, border_value=1))
     if not ps.any() or not ts.any(): return float("nan")
     dt = distance_transform_edt(~ts, sampling=(1, 1, 1))
     dp = distance_transform_edt(~ps, sampling=(1, 1, 1))
@@ -243,21 +270,31 @@ def _safe_round(v, ndigits):
         return None
     return round(float(v), ndigits)
 
+def _spec(p_mask, g_mask, eps=1e-8):
+    """Specificity = TN / (TN + FP)"""
+    tn = int(np.logical_and(~p_mask, ~g_mask).sum())
+    fp = int(np.logical_and(p_mask, ~g_mask).sum())
+    if tn + fp == 0: return 1.0
+    return float((tn + eps) / (tn + fp + eps))
+
 def _triplet(p_mask, g_mask):
     return {
         "dice": _safe_round(_dice(p_mask, g_mask), 4),
         "sens": _safe_round(_sens(p_mask, g_mask), 4),
+        "spec": _safe_round(_spec(p_mask, g_mask), 4),
         "hd95": _safe_round(_hd95(p_mask, g_mask), 2),
     }
 
 def _mean_triplet(metrics_list):
-    """Compute mean dice/sens/hd95 over list of metric dicts."""
-    all_dice = [m["dice"] for m in metrics_list if m["dice"] is not None]
-    all_sens = [m["sens"] for m in metrics_list if m["sens"] is not None]
-    all_hd95 = [m["hd95"] for m in metrics_list if m["hd95"] is not None]
+    """Compute mean dice/sens/spec/hd95 over list of metric dicts."""
+    all_dice = [m["dice"] for m in metrics_list if m.get("dice") is not None]
+    all_sens = [m["sens"] for m in metrics_list if m.get("sens") is not None]
+    all_spec = [m["spec"] for m in metrics_list if m.get("spec") is not None]
+    all_hd95 = [m["hd95"] for m in metrics_list if m.get("hd95") is not None]
     return {
         "dice": round(float(np.mean(all_dice)), 4) if all_dice else None,
         "sens": round(float(np.mean(all_sens)), 4) if all_sens else None,
+        "spec": round(float(np.mean(all_spec)), 4) if all_spec else None,
         "hd95": round(float(np.mean(all_hd95)), 2) if all_hd95 else None,
     }
 
@@ -267,32 +304,47 @@ def load_u8(path):
 
 def calculate_metrics_if_gt_exists(pred_path, gt_file_path):
     """
-    Notebook-style metric:
-    - per_class (default view): 4 class (NETC, SNFH, ET, RC) + mean
-    - per_region_brats (toggle): 3 region (ET, TC, WT)
-    - mean_brats_6: mean over 6 metrik gabungan
+    Evaluasi metrik BraTS2023 3 kelas (NETC, Edema, ET):
+    - per_class: NETC (1), ED (2), ET (3) + mean
+    - per_region_brats: ET, TC (NETC+ET), WT (NETC+ED+ET)
+    - mean_brats_5: mean over ET, TC, WT, NETC, ED
+
+    Metrik dihitung dari channel probabilitas biner mentah (raw_bin) jika ada,
+    agar konsisten dengan evaluasi Colab (tanpa efek aturan prioritas visual).
     """
     if gt_file_path is None or not os.path.exists(gt_file_path):
         return None
     try:
-        pred = load_u8(pred_path)
         gt = load_u8(gt_file_path)
 
-        if pred.shape != gt.shape:
-            print(f"Shape mismatch: pred {pred.shape} vs gt {gt.shape}")
-            return None
+        # Cek apakah ada file raw binary prediction npz
+        npz_path = pred_path.replace('.nii.gz', '_raw_prob.npz')
+        if os.path.exists(npz_path):
+            raw_data = np.load(npz_path)
+            raw_bin = raw_data['raw_bin']  # Shape: (3, X, Y, Z)
 
-        # ── Compound BraTS regions ──
-        et_p, et_g = (pred == 3), (gt == 3)
-        tc_p = (pred == 3) | (pred == 1)
-        tc_g = (gt == 3) | (gt == 1)
-        wt_p = (pred == 1) | (pred == 2) | (pred == 3)
+            netc_p = (raw_bin[0] == 1)
+            edema_p = (raw_bin[1] == 1)
+            et_p = (raw_bin[2] == 1)
+
+            tc_p = netc_p | et_p
+            wt_p = netc_p | edema_p | et_p
+        else:
+            pred = load_u8(pred_path)
+            if pred.shape != gt.shape:
+                print(f"Shape mismatch: pred {pred.shape} vs gt {gt.shape}")
+                return None
+            netc_p = (pred == 1)
+            edema_p = (pred == 2)
+            et_p = (pred == 3)
+            tc_p = (pred == 1) | (pred == 3)
+            wt_p = (pred == 1) | (pred == 2) | (pred == 3)
+
+        netc_g = (gt == 1)
+        edema_g = (gt == 2)
+        et_g = (gt == 3)
+        tc_g = (gt == 1) | (gt == 3)
         wt_g = (gt == 1) | (gt == 2) | (gt == 3)
-
-        # ── Per-class individual ──
-        netc_p, netc_g = (pred == 1), (gt == 1)
-        snfh_p, snfh_g = (pred == 2), (gt == 2)
-        rc_p, rc_g = (pred == 4), (gt == 4)
 
         per_region_brats = {
             "ET": _triplet(et_p, et_g),
@@ -301,25 +353,23 @@ def calculate_metrics_if_gt_exists(pred_path, gt_file_path):
         }
         per_class = {
             "NETC": _triplet(netc_p, netc_g),
-            "SNFH": _triplet(snfh_p, snfh_g),
+            "ED":   _triplet(edema_p, edema_g),
             "ET":   _triplet(et_p, et_g),
-            "RC":   _triplet(rc_p, rc_g),
         }
         per_class["mean"] = _mean_triplet(
-            [per_class["NETC"], per_class["SNFH"], per_class["ET"], per_class["RC"]]
+            [per_class["NETC"], per_class["ED"], per_class["ET"]]
         )
 
-        # Mean BraTS 6 = 3 regions + 3 individual (NETC, SNFH, RC; ET sudah di regions)
-        mean_brats_6 = _mean_triplet([
+        mean_brats_5 = _mean_triplet([
             per_region_brats["ET"], per_region_brats["TC"], per_region_brats["WT"],
-            per_class["NETC"], per_class["SNFH"], per_class["RC"],
+            per_class["NETC"], per_class["ED"],
         ])
 
         result = {
             "default_view": "per_class",
             "per_class": per_class,
             "per_region_brats": per_region_brats,
-            "mean_brats_6": mean_brats_6,
+            "mean_brats_6": mean_brats_5,  # Key tetap mean_brats_6 untuk kompatibilitas UI frontend
         }
         return json.dumps(result)
     except Exception as e:
@@ -332,74 +382,78 @@ def norm01(x):
     if hi <= lo: hi = lo + 1e-8
     return np.clip((x - lo) / (hi - lo + 1e-8), 0, 1)
 
-def generate_single_3d(mri_ds, pred_ds, out_path, target_label, ds=2, show_brain=True):
-    # Match Colab colors and naming exactly:
-    # 1: NETC (Cyan), 2: SNFH (Yellow), 3: ET (Red), 4: RC (Purple/Magenta)
-    colors_3d = {
-        1: ("NETC", "#00ffff"),  # Cyan
-        2: ("SNFH", "#e5c100"),  # Yellow/Gold
-        3: ("ET",   "#ff0000"),  # Red
-        4: ("RC",   "#ff00ff")   # Purple/Magenta
-    }
-    # Match Colab opacities exactly:
-    op_map = {1: 0.7, 2: 0.4, 3: 0.9, 4: 0.8}
-    fig_3d = go.Figure()
+def make_mesh(mask, color, opacity, name, smooth_sigma=None):
+    mask = mask.astype(np.uint8)
 
-    if show_brain:
-        # Match Colab add_brain_outline: brain_mask = (mri_vol > 0.02)
-        brain = mri_ds > 0.02
-        if brain.sum() > 0:
-            # Match Colab: sigma=1.5, level=0.1, color="gainsboro", opacity=0.05
-            brain_smooth = gaussian_filter(brain.astype(float), sigma=1.5)
-            try:
-                v, f, _, _ = measure.marching_cubes(brain_smooth, level=0.1)
-                fig_3d.add_trace(go.Mesh3d(
-                    x=v[:,0] * ds, y=v[:,1] * ds, z=v[:,2] * ds,
-                    i=f[:,0], j=f[:,1], k=f[:,2],
-                    color="gainsboro", opacity=0.05,
-                    lighting=dict(
-                        ambient=0.4,
-                        diffuse=0.6,
-                        specular=0.5,
-                        roughness=0.3
-                    ),
-                    lightposition=dict(x=150, y=150, z=250),
-                    name="Brain", hoverinfo="skip"
-                ))
-            except Exception as e:
-                print(f"Error marching cubes for brain: {e}")
+    if smooth_sigma:
+        mask = gaussian_filter(mask.astype(float), sigma=smooth_sigma)
+        level = 0.3
+    else:
+        level = 0.5
 
-    labels_to_draw = [2, 4, 3, 1] if target_label == 0 else [target_label]
+    if mask.max() < level:
+        return None
 
-    for lbl in labels_to_draw:
-        name, col = colors_3d[lbl]
-        bin_vol = (pred_ds == lbl).astype(np.float32)
-        if bin_vol.sum() >= 10:
-            # Match Colab add_tumor_mesh: smooth_sigma=0.8, level=0.2
-            bin_smooth = gaussian_filter(bin_vol, sigma=0.8)
-            try:
-                v, f, _, _ = measure.marching_cubes(bin_smooth, level=0.2, allow_degenerate=True)
-                fig_3d.add_trace(go.Mesh3d(
-                    x=v[:,0] * ds, y=v[:,1] * ds, z=v[:,2] * ds,
-                    i=f[:,0], j=f[:,1], k=f[:,2],
-                    color=col, opacity=op_map[lbl] if target_label == 0 else 1.0,
-                    lighting=dict(
-                        ambient=0.5,
-                        diffuse=0.8,
-                        specular=0.3,
-                        roughness=0.5,
-                    ),
-                    lightposition=dict(x=100, y=200, z=300),
-                    name=name
-                ))
-            except Exception as e:
-                print(f"Error marching cubes for label {lbl}: {e}")
-            
-    # Match Colab Clean Layout: No Grid, No Box, White Background, Eye Camera
-    camera = dict(
-        eye=dict(x=1.5, y=1.5, z=1.0),
-        up=dict(x=0, y=0, z=1),
+    try:
+        verts, faces, normals, _ = measure.marching_cubes(mask, level=level)
+        x, y, z = verts.T
+        i, j, k = faces.T
+
+        return go.Mesh3d(
+            x=x, y=y, z=z, i=i, j=j, k=k,
+            color=color,
+            opacity=opacity,
+            name=name,
+            lighting=dict(ambient=0.6, diffuse=0.8, specular=0.3, roughness=0.5),
+            lightposition=dict(x=100, y=200, z=150),
+            flatshading=False
+        )
+    except Exception as e:
+        print(f"[WARN] Error marching cubes for {name}: {e}")
+        return None
+
+def generate_all_3d_views(volume_ds, pred_ds, upload_dir, scan_id, ds=2):
+    # ===== Permukaan otak (persis seperti Colab) =====
+    brain_mesh = None
+    brain_thresh = np.percentile(volume_ds[volume_ds > 0], 40) if (volume_ds > 0).any() else 0
+    brain_mask = volume_ds > brain_thresh
+
+    brain_mesh = make_mesh(
+        brain_mask, color='rgb(230,230,230)', opacity=0.12, name='Jaringan Otak', smooth_sigma=1.2
     )
+
+    # ===== Mesh tumor per kelas (persis seperti Colab) =====
+    # Opacity berbeda per kelas: Edema dibuat transparan (0.35) supaya kelas di dalamnya terlihat
+    color_map = {
+        1: ('magenta', 'Necrotic / Non-Enhancing Tumor Core', 0.95),
+        2: ('yellow', 'Peritumoral Edema', 0.35),
+        3: ('cyan', 'Enhancing Tumor', 0.95),
+    }
+
+    # Render order: Edema dulu (2), baru Core (1), baru Enhancing (3)
+    render_order = [2, 1, 3]
+
+    tumor_meshes = {}
+    if pred_ds is not None:
+        for class_val in render_order:
+            color, name, opacity = color_map[class_val]
+            mask = (pred_ds == class_val)
+            if mask.sum() < 5:
+                continue
+            t_mesh = make_mesh(mask, color=color, opacity=opacity, name=name.split(' (')[0], smooth_sigma=0.3)
+            if t_mesh is not None:
+                tumor_meshes[class_val] = t_mesh
+
+    legend_text_parts = ["<b>Keterangan Segmentasi:</b>"]
+    legend_text_parts.append("⬜ Jaringan Otak — struktur otak secara keseluruhan (transparan)")
+    for class_val in [2, 1, 3]:
+        if class_val in tumor_meshes:
+            color, name, _ = color_map[class_val]
+            swatch = {'magenta': '🟣', 'yellow': '🟡', 'cyan': '🔵'}.get(color, '⬛')
+            legend_text_parts.append(f"{swatch} {name}")
+    legend_text = "<br>".join(legend_text_parts)
+
+    camera = dict(eye=dict(x=1.5, y=1.5, z=1.0), up=dict(x=0, y=0, z=1))
     scene_config = dict(
         aspectmode="data",
         xaxis=dict(visible=False, showgrid=False, zeroline=False, showbackground=False),
@@ -408,12 +462,76 @@ def generate_single_3d(mri_ds, pred_ds, out_path, target_label, ds=2, show_brain
         bgcolor="white",
         camera=camera,
     )
-    fig_3d.update_layout(
-        paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
-        scene=scene_config,
-        margin=dict(l=0, r=0, b=0, t=0)
-    )
-    fig_3d.write_html(out_path, full_html=True, include_plotlyjs='cdn')
+
+    path_3d_db = {}
+    base_labels = {"all": 0, "netc": 1, "edema": 2, "et": 3}
+
+    for key, target_label in base_labels.items():
+        for show_brain in [True, False]:
+            fig_3d = go.Figure()
+
+            # Gunakan mesh brain
+            if show_brain and brain_mesh is not None:
+                fig_3d.add_trace(brain_mesh)
+
+            labels_to_draw = [2, 1, 3] if target_label == 0 else [target_label]
+            for lbl in labels_to_draw:
+                if lbl in tumor_meshes:
+                    fig_3d.add_trace(tumor_meshes[lbl])
+
+            fig_3d.update_layout(
+                title="Visualisasi 3D",
+                paper_bgcolor='white',
+                plot_bgcolor='white',
+                font=dict(color='black'),
+                scene=scene_config,
+                margin=dict(l=0, r=0, b=0, t=30),
+                showlegend=True,
+                legend=dict(
+                    title=dict(text="<b>Kelas Segmentasi</b>", font=dict(size=14)),
+                    font=dict(size=12),
+                    bgcolor='rgba(255,255,255,0.85)',
+                    bordercolor='lightgray',
+                    borderwidth=1,
+                    x=0.75, y=0.9
+                ),
+                annotations=[
+                    dict(
+                        text=legend_text,
+                        showarrow=False,
+                        xref="paper", yref="paper",
+                        x=0.02, y=0.02,
+                        align="left",
+                        font=dict(size=11, color="black"),
+                        bgcolor="rgba(255,255,255,0.85)",
+                        bordercolor="lightgray",
+                        borderwidth=1,
+                        borderpad=8
+                    )
+                ]
+            )
+
+            fname_suffix = "" if show_brain else "_nobrain"
+            fname_3d = f"result_{scan_id}_3d_{key}{fname_suffix}.html"
+            out_path = os.path.join(upload_dir, fname_3d)
+
+            fig_3d.write_html(out_path, full_html=True, include_plotlyjs='cdn')
+            try:
+                with open(out_path, "r", encoding="utf-8") as f:
+                    html_content = f.read()
+                clean_html = re.sub(r'\s+integrity="[^"]*"', '', html_content)
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(clean_html)
+            except Exception as e:
+                print(f"[WARN] Gagal membersihkan integrity HTML 3D: {e}")
+
+            db_key = f"{key}{fname_suffix}"
+            path_3d_db[db_key] = f"static/{fname_3d}"
+
+    path_3d_db["snfh"] = path_3d_db["edema"]
+    path_3d_db["snfh_nobrain"] = path_3d_db["edema_nobrain"]
+
+    return path_3d_db
 
 
 # ── Progress helper ──
@@ -430,7 +548,7 @@ def _update_scan_progress(db, scan, status: str, progress: int, message: str = N
         db.rollback()
 
 # AI PROCESSOR (BACKGROUND TASK)
-def process_mri_ai(scan_id: int, input_dir: str, output_dir: str, case_id: str, gt_file_path: str, model_type: str = "optimisasi"):
+def process_mri_ai(scan_id: int, input_dir: str, output_dir: str, case_id: str, gt_file_path: str, model_type: str = "u2net_attention"):
     db = SessionLocal()
     scan = db.query(models.MRIScan).filter(models.MRIScan.id == scan_id).first()
     if not scan:
@@ -442,15 +560,15 @@ def process_mri_ai(scan_id: int, input_dir: str, output_dir: str, case_id: str, 
     try:
         # Stage 1: Loading model
         _update_scan_progress(db, scan, "loading_model", 15,
-                             f"Memuat model {model_type.upper()}...")
+                             "Memuat model RSU U²-Net+ (Attention Gate)...")
 
         # Stage 2: Preprocessing
         _update_scan_progress(db, scan, "preprocessing", 25,
-                             "Memproses data MRI (orientation, spacing, normalisasi)...")
+                             "Memproses data MRI (z-score standarisasi per-patch)...")
 
         # Stage 3: Inference
         _update_scan_progress(db, scan, "running_inference", 60,
-                             f"Menjalankan AI segmentasi (sliding window inference)...")
+                             "Menjalankan AI segmentasi (sliding window inference)...")
 
         pred_path, inference_time = predict_segmentation(
             input_dir=input_dir,
@@ -462,7 +580,7 @@ def process_mri_ai(scan_id: int, input_dir: str, output_dir: str, case_id: str, 
 
         print(f"[INFERENCE TIME] {inference_time:.2f} detik (model: {model_type})")
 
-        mri_path_3d = os.path.join(input_dir, f"{case_id}_0003.nii.gz")
+        mri_path_3d = os.path.join(input_dir, f"{case_id}_0000.nii.gz")
 
         pred_data = nib.load(pred_path).get_fdata()
         unique_labels = np.unique(pred_data).astype(int).tolist()
@@ -486,7 +604,7 @@ def process_mri_ai(scan_id: int, input_dir: str, output_dir: str, case_id: str, 
             "inference_time_seconds": round(inference_time, 2),
         })
 
-        # Stage 5: 3D Rendering
+        # Stage 5: 3D Rendering (Pre-computed mesh optimization)
         _update_scan_progress(db, scan, "rendering_3d", 85,
                              "Membuat visualisasi 3D interaktif...")
 
@@ -494,23 +612,10 @@ def process_mri_ai(scan_id: int, input_dir: str, output_dir: str, case_id: str, 
         pred_3d = nib.as_closest_canonical(nib.load(pred_path)).get_fdata().astype(np.uint8)
 
         ds = 2
-        mri01 = norm01(mri_3d)
-        mri_ds = mri01[::ds, ::ds, ::ds]
-
+        volume_ds = mri_3d[::ds, ::ds, ::ds]
         pred_ds = pred_3d[::ds, ::ds, ::ds]
-        path_3d_db = {}
-        base_labels = {"all": 0, "netc": 1, "snfh": 2, "et": 3, "rc": 4}
 
-        for key, lbl in base_labels.items():
-            fname_3d_with = f"result_{scan_id}_3d_{key}.html"
-            out_path_with = os.path.join(UPLOAD_DIR, fname_3d_with)
-            generate_single_3d(mri_ds, pred_ds, out_path_with, lbl, show_brain=True)
-            path_3d_db[key] = f"static/{fname_3d_with}"
-
-            fname_3d_no = f"result_{scan_id}_3d_{key}_nobrain.html"
-            out_path_no = os.path.join(UPLOAD_DIR, fname_3d_no)
-            generate_single_3d(mri_ds, pred_ds, out_path_no, lbl, show_brain=False)
-            path_3d_db[f"{key}_nobrain"] = f"static/{fname_3d_no}"
+        path_3d_db = generate_all_3d_views(volume_ds, pred_ds, UPLOAD_DIR, scan_id, ds=ds)
 
         scan.filepath_3d = json.dumps(path_3d_db)
         scan.filepath_2d = "dynamic" 
@@ -573,12 +678,11 @@ def get_scan_status(scan_id: int, db: Session = Depends(get_db)):
 async def upload_mri_smart(
     background_tasks: BackgroundTasks, nama: str = Form(...), id_pasien: str = Form(...), tgl_lahir: str = Form(...),
     status: str = Form(...), jenis_mri: str = Form(...), catatan: str = Form(default="-"),
-    model_type: str = Form(default="optimisasi"),
+    model_type: str = Form(default="u2net_attention"),
     file: UploadFile = File(...),
     current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     if not file.filename.endswith('.zip'): raise HTTPException(status_code=400, detail="Harus file .zip yang berisi 4 modalitas MRI!")
-    if model_type not in ("optimisasi", "paper"): raise HTTPException(status_code=400, detail="model_type harus 'optimisasi' atau 'paper'")
 
     pasien_db = db.query(models.Patient).filter(models.Patient.id_pasien_rs == id_pasien).first()
     if not pasien_db:
@@ -657,34 +761,34 @@ async def upload_mri_smart(
         f_lower = f.lower()
         if any(x in f_lower for x in ["-seg", "_seg", "-gt", "_gt"]):
             seg_file = f
-        elif any(x in f_lower for x in ["_0003", "-t2f", "_t2f", "-flair", "_flair"]):
-            t2f_file = f
-        elif any(x in f_lower for x in ["_0001", "-t1c", "_t1c", "-t1ce", "_t1ce"]):
+        elif any(x in f_lower for x in ["_0000", "-t1c", "_t1c", "-t1ce", "_t1ce"]):
             t1c_file = f
-        elif any(x in f_lower for x in ["_0000", "-t1n", "_t1n"]) or (any(x in f_lower for x in ["-t1", "_t1"]) and not any(x in f_lower for x in ["t1c", "t1ce"])):
+        elif any(x in f_lower for x in ["_0001", "-t1n", "_t1n"]) or (any(x in f_lower for x in ["-t1", "_t1"]) and not any(x in f_lower for x in ["t1c", "t1ce"])):
             t1n_file = f
-        elif any(x in f_lower for x in ["_0002", "-t2w", "_t2w", "-t2", "_t2"]):
+        elif any(x in f_lower for x in ["_0002", "-t2f", "_t2f", "-flair", "_flair"]):
+            t2f_file = f
+        elif any(x in f_lower for x in ["_0003", "-t2w", "_t2w", "-t2", "_t2"]):
             t2w_file = f
 
     if not (t1n_file and t1c_file and t2w_file and t2f_file):
         raise HTTPException(
             status_code=400,
             detail="Format ZIP salah! Harus berisi 4 modalitas MRI (T1, T1c, T2, FLAIR). "
-                   f"Ditemukan: T1={t1n_file}, T1c={t1c_file}, T2={t2w_file}, FLAIR={t2f_file}"
+                   f"Ditemukan: T1c={t1c_file}, T1={t1n_file}, FLAIR={t2f_file}, T2={t2w_file}"
         )
 
 
     # Tentukan case_id dari prefix file T1c
     case_id = t1c_file
-    for suff in [".nii.gz", "-t1c", "_t1c", "-t1ce", "_t1ce", "_0001"]:
+    for suff in [".nii.gz", "-t1c", "_t1c", "-t1ce", "_t1ce", "_0000", "_0001"]:
         if case_id.lower().endswith(suff):
             case_id = case_id[:-len(suff)]
     
-    # Standarisasi nama file ke format internal (_0000 s/d _0003)
-    shutil.move(os.path.join(input_dir, t1n_file), os.path.join(input_dir, f"{case_id}_0000.nii.gz"))
-    shutil.move(os.path.join(input_dir, t1c_file), os.path.join(input_dir, f"{case_id}_0001.nii.gz"))
-    shutil.move(os.path.join(input_dir, t2w_file), os.path.join(input_dir, f"{case_id}_0002.nii.gz"))
-    shutil.move(os.path.join(input_dir, t2f_file), os.path.join(input_dir, f"{case_id}_0003.nii.gz"))
+    # Standarisasi nama file ke format internal dataset.json (_0000=t1c, _0001=t1n, _0002=t2f, _0003=t2w)
+    shutil.move(os.path.join(input_dir, t1c_file), os.path.join(input_dir, f"{case_id}_0000.nii.gz"))
+    shutil.move(os.path.join(input_dir, t1n_file), os.path.join(input_dir, f"{case_id}_0001.nii.gz"))
+    shutil.move(os.path.join(input_dir, t2f_file), os.path.join(input_dir, f"{case_id}_0002.nii.gz"))
+    shutil.move(os.path.join(input_dir, t2w_file), os.path.join(input_dir, f"{case_id}_0003.nii.gz"))
 
     gt_file_path = None
     if seg_file:
@@ -712,49 +816,65 @@ async def upload_mri_smart(
     }
 
 @app.get("/analisis/{analysis_id}/slice")
-def get_mri_slice(analysis_id: int, axis: int = 2, idx: int = 75, label: str = "all", db: Session = Depends(get_db)):
+def get_mri_slice(analysis_id: int, axis: int = 2, idx: int = None, label: str = "all", db: Session = Depends(get_db)):
     scan = db.query(models.MRIScan).filter(models.MRIScan.id == analysis_id).first()
     if not scan: raise HTTPException(status_code=404, detail="Scan tidak ditemukan")
+    if scan.processing_status != "completed":
+        raise HTTPException(status_code=400, detail="Proses AI segmentasi belum selesai")
     try:
-        meta = json.loads(scan.catatan_teknis)
+        meta = json.loads(scan.catatan_teknis) if scan.catatan_teknis else {}
         case_id = meta.get("case_id")
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
-        raise HTTPException(status_code=400, detail="Data belum siap")
+        meta = {}
+        case_id = None
 
     scan_folder = scan.filepath_raw
     input_dir = os.path.join(scan_folder, "input")
     output_dir = os.path.join(scan_folder, "output")
 
-    pred_path = os.path.join(output_dir, f"{case_id}.nii.gz")
-    mri_path_2d = os.path.join(input_dir, f"{case_id}_0001.nii.gz")  # T1c: konsisten dengan 3D viewer & standar klinis
+    # 1. Cari pred_path secara fleksibel
+    pred_path = None
+    if case_id:
+        p = os.path.join(output_dir, f"{case_id}.nii.gz")
+        if os.path.exists(p): pred_path = p
+    if not pred_path and os.path.exists(output_dir):
+        files = [os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.endswith(".nii.gz") and not any(x in f for x in ["_edema", "_et", "_netc", "_nobrain", "_GT"])]
+        if files: pred_path = files[0]
 
+    # 2. Cari mri_path_2d secara fleksibel (prioritaskan T1c _0000 atau _0001, kemudian modalitas lain)
+    mri_path_2d = None
+    if case_id:
+        for suffix in ["_0000.nii.gz", "_0001.nii.gz", "_0002.nii.gz", "_0003.nii.gz"]:
+            p = os.path.join(input_dir, f"{case_id}{suffix}")
+            if os.path.exists(p):
+                mri_path_2d = p
+                break
+    if not mri_path_2d and os.path.exists(input_dir):
+        files = [os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith(".nii.gz") and not any(x in f for x in ["-seg", "_seg", "-gt", "_gt"])]
+        if files: mri_path_2d = files[0]
 
+    if not pred_path or not mri_path_2d or not os.path.exists(pred_path) or not os.path.exists(mri_path_2d):
+        raise HTTPException(status_code=400, detail="File segmentasi atau MRI belum tersedia")
+
+    fig = None
     try:
         mri_vol = nib.load(mri_path_2d).get_fdata().astype(np.float32)
         pred_vol = nib.load(pred_path).get_fdata().astype(np.uint8)
 
         axis_size = mri_vol.shape[axis]
 
-        # Dynamic slice index selection:
-        # If the index is the default 75 or not specified:
-        if idx == 75 or idx is None:
+        # Dynamic slice index selection jika idx tidak diberikan atau bernilai negatif:
+        # Cari slice dengan area tumor terbesar pada axis tersebut
+        if idx is None or idx < 0:
             tumor_mask = pred_vol > 0
             if tumor_mask.any():
-                # Find slice with maximum tumor segmentation area
                 sum_axes = tuple(i for i in range(3) if i != axis)
                 tumor_area_per_slice = tumor_mask.sum(axis=sum_axes)
                 idx = int(np.argmax(tumor_area_per_slice))
             else:
-                # Find slice with maximum brain tissue area (intensity > 10% of max)
-                brain_mask = mri_vol > (mri_vol.max() * 0.1)
-                if brain_mask.any():
-                    sum_axes = tuple(i for i in range(3) if i != axis)
-                    brain_area_per_slice = brain_mask.sum(axis=sum_axes)
-                    idx = int(np.argmax(brain_area_per_slice))
-                else:
-                    idx = axis_size // 2
+                idx = axis_size // 2
 
-        # Clamp idx to safe boundary
+        # Clamp idx to safe boundary [0, axis_size - 1]
         idx = max(0, min(int(idx), axis_size - 1))
 
         def take_slice(vol, axis, idx):
@@ -763,30 +883,31 @@ def get_mri_slice(analysis_id: int, axis: int = 2, idx: int = 75, label: str = "
             if axis == 2: return vol[:, :, idx]
             raise HTTPException(status_code=400, detail=f"Axis tidak valid: {axis}. Harus 0, 1, atau 2.")
 
-        mri_s = norm01(take_slice(mri_vol, axis, idx))
+        raw_mri_slice = take_slice(mri_vol, axis, idx)
+        mri_s = norm01(raw_mri_slice)
         pred_s = take_slice(pred_vol, axis, idx)
 
+        # Filter label sesuai pilihan user
         if label == "netc": pred_s = np.where(pred_s == 1, 1, 0)
-        elif label == "snfh": pred_s = np.where(pred_s == 2, 2, 0)
+        elif label in ("edema", "snfh"): pred_s = np.where(pred_s == 2, 2, 0)
         elif label == "et": pred_s = np.where(pred_s == 3, 3, 0)
-        elif label == "rc": pred_s = np.where(pred_s == 4, 4, 0)
 
+        # Colormap 100% Identik Colab:
+        # 1: NETC (Magenta #FF00FF), 2: Edema (Yellow #FFD700), 3: ET (Cyan #00FFFF)
         colors_hex = {
-            1: "#00ffff",  # NETC (Cyan)
-            2: "#e5c100",  # SNFH (Yellow/Gold)
-            3: "#ff0000",  # ET (Red)
-            4: "#ff00ff"   # RC (Purple/Magenta)
+            1: "#FF00FF",  # NETC (Magenta)
+            2: "#FFD700",  # Edema (Yellow)
+            3: "#00FFFF",  # ET (Cyan)
         }
-        mask_cmap = ListedColormap(["none", colors_hex[1], colors_hex[2], colors_hex[3], colors_hex[4]])
+        mask_cmap = ListedColormap(["none", colors_hex[1], colors_hex[2], colors_hex[3]])
 
         fig, ax = plt.subplots(figsize=(6, 6), dpi=100)
         ax.imshow(np.rot90(mri_s), cmap="gray")
-        ax.imshow(np.rot90(pred_s), cmap=mask_cmap, alpha=0.6, vmin=0, vmax=4)
+        ax.imshow(np.rot90(pred_s), cmap=mask_cmap, alpha=0.6, vmin=0, vmax=3)
         ax.axis("off")
 
         buf = io.BytesIO()
         plt.savefig(buf, format="png", bbox_inches='tight', pad_inches=0, transparent=True)
-        plt.close(fig)
         buf.seek(0)
         return StreamingResponse(
             buf,
@@ -794,7 +915,12 @@ def get_mri_slice(analysis_id: int, axis: int = 2, idx: int = 75, label: str = "
             headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"}
         )
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if fig is not None:
+            plt.close(fig)
 
 @app.get("/analisis/{analysis_id}/info")
 def get_analysis_info(analysis_id: int, db: Session = Depends(get_db)):
@@ -815,7 +941,7 @@ def get_analysis_info(analysis_id: int, db: Session = Depends(get_db)):
 
 @app.get("/riwayat-semua/")
 def get_all_history(db: Session = Depends(get_db)):
-    scans = db.query(models.MRIScan).order_by(models.MRIScan.upload_date.desc()).all()
+    scans = db.query(models.MRIScan).options(joinedload(models.MRIScan.patient)).order_by(models.MRIScan.upload_date.desc()).all()
     
     tz_jkt = pytz.timezone('Asia/Jakarta')
     results = []
@@ -855,7 +981,7 @@ def get_all_history(db: Session = Depends(get_db)):
 
 @app.get("/analisis/{analysis_id}")
 def get_analysis_detail(analysis_id: int, db: Session = Depends(get_db)):
-    scan = db.query(models.MRIScan).filter(models.MRIScan.id == analysis_id).first()
+    scan = db.query(models.MRIScan).options(joinedload(models.MRIScan.patient)).filter(models.MRIScan.id == analysis_id).first()
     if not scan: raise HTTPException(status_code=404, detail="Data MRI tidak ditemukan")
 
     detected_list = []
@@ -893,6 +1019,32 @@ def get_analysis_detail(analysis_id: int, db: Session = Depends(get_db)):
     else:
         waktu_scan_cantik = "-"
 
+    # Hitung atau sediakan peak tumor slice per axis [Sagittal, Coronal, Axial]
+    peak_slices = meta.get("peak_slices")
+    if not peak_slices:
+        try:
+            pred_path = os.path.join(scan.filepath_raw, "output", f"{meta.get('case_id')}.nii.gz")
+            if not os.path.exists(pred_path) and os.path.exists(os.path.join(scan.filepath_raw, "output")):
+                cands = [os.path.join(scan.filepath_raw, "output", f) for f in os.listdir(os.path.join(scan.filepath_raw, "output")) if f.endswith(".nii.gz") and not any(x in f for x in ["_edema", "_et", "_netc", "_nobrain", "_GT"])]
+                if cands: pred_path = cands[0]
+            if os.path.exists(pred_path):
+                pred_vol = nib.load(pred_path).get_fdata()
+                tumor_mask = pred_vol > 0
+                peak_slices = []
+                for ax in range(3):
+                    sum_axes = tuple(i for i in range(3) if i != ax)
+                    tumor_area = tumor_mask.sum(axis=sum_axes)
+                    if tumor_area.any():
+                        peak_slices.append(int(np.argmax(tumor_area)))
+                    else:
+                        peak_slices.append(int(pred_vol.shape[ax] // 2))
+                meta["peak_slices"] = peak_slices
+                scan.catatan_teknis = json.dumps(meta)
+                db.commit()
+        except Exception as e:
+            print(f"[WARN] Gagal menghitung peak_slices: {e}")
+            peak_slices = [155, 119, 42]
+
     return {
         "id": scan.id,
         "image_url": "dynamic", 
@@ -908,7 +1060,8 @@ def get_analysis_detail(analysis_id: int, db: Session = Depends(get_db)):
         "notes_dokter": getattr(scan, "catatan_dokter", "Belum ada catatan dokter"),
         "detected_regions": detected_list,
         "metrics": meta.get("metrics"),
-        "shape": meta.get("shape", [155, 240, 240]),
+        "shape": meta.get("shape", [240, 240, 155]),
+        "peak_slices": peak_slices or [155, 119, 42],
         "model_type": meta.get("model_type", "unknown"),
         "inference_time_seconds": meta.get("inference_time_seconds"),
     }
@@ -941,8 +1094,8 @@ async def update_doctor_notes(analysis_id: int, data: dict, db: Session = Depend
 @app.get("/dashboard-summary/", response_model=schemas.DashboardSummary)
 def get_summary(db: Session = Depends(get_db)):
     total_p = db.query(models.Patient).count()
-    menunggu = db.query(models.MRIScan).filter(models.MRIScan.hasil_prediksi == "Sedang Dianalisis...").count()
-    selesai = db.query(models.MRIScan).filter(models.MRIScan.hasil_prediksi != "Sedang Dianalisis...").count()
+    menunggu = db.query(models.MRIScan).filter(models.MRIScan.processing_status.in_(["uploaded", "processing"])).count()
+    selesai = db.query(models.MRIScan).filter(models.MRIScan.processing_status == "completed").count()
     return {"total_pasien": total_p, "total_menunggu": menunggu, "total_selesai": selesai}
 
 @app.get("/logs/", response_model=List[schemas.LogResponse])
@@ -957,7 +1110,7 @@ def get_logs(role: str = None, start_date: str = None, end_date: str = None, db:
             query = query.filter(models.ActivityLog.timestamp <= end)
         except ValueError: pass
         
-    logs = query.order_by(models.ActivityLog.timestamp.desc()).all()
+    logs = query.order_by(models.ActivityLog.timestamp.desc()).limit(200).all()
     tz_jkt = pytz.timezone('Asia/Jakarta')
     results = []
     
@@ -984,7 +1137,7 @@ def get_logs(role: str = None, start_date: str = None, end_date: str = None, db:
 
 @app.get("/notifications/")
 def get_notifications(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    notifs = db.query(models.Notification).filter(func.lower(models.Notification.target_role) == func.lower(current_user.role)).order_by(models.Notification.created_at.desc()).all()
+    notifs = db.query(models.Notification).filter(func.lower(models.Notification.target_role) == func.lower(current_user.role)).order_by(models.Notification.created_at.desc()).limit(100).all()
     
     tz_jkt = pytz.timezone('Asia/Jakarta')
     results = []

@@ -1,0 +1,62 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+
+# Model checkpoints & large weights (> 100MB)
+*.h5
+*.weights.h5
+*.pth
+*.pt
+*.onnx
+*.bin
+backend-tumor/checkpoints/*.weights.h5
+backend-tumor/checkpoints/*.h5
+
+# Local databases & logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+backend-tumor/sql_app.db
+backend-tumor/test_local.db
+
+# Backend uploads & media
+backend-tumor/uploads/
+uploads/
+
+# Scratch & temporary analysis files
+backend-tumor/scratch/
+backend-tumor/*.txt
+scratch/
+
+# Environment files
+.env
+.env.local
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

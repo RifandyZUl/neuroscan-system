@@ -6,6 +6,16 @@ uploads/
 MedNeXt/
 backend_mednext/
 *.pth
+*.pt
+*.h5
+*.weights.h5
+checkpoints/*.weights.h5
+checkpoints/*.h5
+*.db
+*.sqlite
+*.sqlite3
 *.zip
 *.tar.gz
 backups/
+scratch/
+*.txt

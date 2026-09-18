@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
+import 'package:axon_vision/pages/detail_analisis_page.dart';
 import 'package:axon_vision/controllers/dashboard_controller.dart';
 import 'package:axon_vision/models/data_pasien_model.dart';
 import 'package:axon_vision/pages/global_widgets/custom/custom_flat_button.dart';
@@ -35,7 +36,7 @@ class UploadScanMri extends StatefulWidget {
 class _UploadScanMriState extends State<UploadScanMri> {
   PlatformFile? pickedFile;
   String selectedMriType = 'T1 Weighted';
-  String _selectedModel = 'optimisasi'; // default: CKD-TransBTS L5
+  final String _selectedModel = 'u2net_attention'; // default: RSU U2-Net+ Attention
   bool isHovering = false;
 
   TextEditingController catatanController = TextEditingController();
@@ -134,7 +135,7 @@ class _UploadScanMriState extends State<UploadScanMri> {
     double targetProgress = 0.02;
     Timer? progressSmoothTimer;
 
-    // Ticker untuk pergerakan halus (Cepat s.d 50%, lalu asimtotik merayap menyesuaikan durasi model)
+    // Ticker untuk pergerakan halus yang mengikuti progress riil backend
     progressSmoothTimer = Timer.periodic(const Duration(milliseconds: 50), (smoothTimer) {
       if (statusNotifier.value == 'failed') {
         smoothTimer.cancel();
@@ -144,62 +145,34 @@ class _UploadScanMriState extends State<UploadScanMri> {
       double current = progressNotifier.value;
       if (targetProgress >= 0.99) {
         // Backend selesai! Tarik progress bar dengan cepat ke 100%
-        double step = (1.0 - current) / 8.0;
-        if (step < 0.015) step = 0.015;
+        double step = (1.0 - current) / 4.0;
+        if (step < 0.02) step = 0.02;
         progressNotifier.value = (current + step).clamp(0.0, 1.0);
       } else {
-        if (current < 0.50) {
-          // Fase 1: Jalan stabil dan cepat dari awal hingga 50%
-          // L5 mencapai 50% dalam ~3 detik, Paper mencapai 50% dalam ~6 detik
-          double speed = modelType == 'paper' ? 0.0041 : 0.0083;
-          progressNotifier.value = (current + speed).clamp(0.0, 0.50);
+        if (current < targetProgress) {
+          // Kejar targetProgress backend secara halus
+          double step = (targetProgress - current) / 8.0;
+          if (step < 0.005) step = 0.005;
+          progressNotifier.value = (current + step).clamp(0.0, targetProgress);
         } else {
-          // Fase 2: Di atas 50%
-          if (modelType == 'paper') {
-            // Model Paper: Lebih lambat lagi dari optimisasi
-            double limit = 0.995;
-            double remaining = limit - current;
-            if (remaining > 0) {
-              double divider;
-              if (current < 0.75) {
-                divider = 2000.0;
-              } else if (current < 0.85) {
-                divider = 4000.0;
-              } else {
-                divider = 7000.0;
-              }
-              
-              double creepStep = remaining / divider;
-              if (creepStep < 0.00001) creepStep = 0.00001; // langkah minimum super kecil
-              progressNotifier.value = (current + creepStep).clamp(0.0, 0.99);
-            }
-          } else {
-            // Model L5/Optimisasi: Disamakan dengan kecepatan Model Paper sebelumnya
-            double limit = 0.995;
-            double remaining = limit - current;
-            if (remaining > 0) {
-              double divider;
-              if (current < 0.75) {
-                divider = 700.0;
-              } else if (current < 0.85) {
-                divider = 1300.0;
-              } else {
-                divider = 2200.0;
-              }
-              
-              double creepStep = remaining / divider;
-              if (creepStep < 0.00002) creepStep = 0.00002;
-              progressNotifier.value = (current + creepStep).clamp(0.0, 0.99);
-            }
+          // Jika sudah mencapai targetProgress backend tapi belum naik ke stage berikutnya,
+          // merayap sangat pelan (maksimal +4% di atas targetProgress saat ini, cap 0.98)
+          double maxCap = (targetProgress + 0.04).clamp(0.0, 0.98);
+          if (current < maxCap) {
+            progressNotifier.value = (current + 0.0003).clamp(0.0, maxCap);
           }
         }
       }
 
-      // Selesai sepenuhnya
+      // Selesai sepenuhnya -> Langsung ke halaman Detail Analisis!
       if (targetProgress >= 0.99 && progressNotifier.value >= 0.995) {
         smoothTimer.cancel();
         Get.back(); // Tutup progress dialog
-        _showSuccessDialog();
+        final userRole = GetStorage().read('role') ?? 'RADIOLOG';
+        Get.to(() => DetailAnalisisPage(
+              analysisId: scanId.toString(),
+              role: userRole.toString(),
+            ));
       }
     });
 
@@ -351,61 +324,94 @@ class _UploadScanMriState extends State<UploadScanMri> {
   }
 
   // LOGIKA POPUP
-  void _showSuccessDialog() {
+  void _showSuccessDialog([int? scanId]) {
     Get.dialog(
       Dialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         backgroundColor: Colors.white,
         elevation: 10,
         child: Container(
-          padding: const EdgeInsets.all(20),
-          width: 400,
+          padding: const EdgeInsets.all(24),
+          width: 440,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(
-                Icons.check_circle,
+                Icons.check_circle_rounded,
                 color: Color(0xFF4CAF50),
-                size: 80,
+                size: 72,
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               PoppinsTextView(
-                value: "Berhasil Dikirim",
+                value: "Analisis AI Selesai!",
                 fontWeight: FontWeight.bold,
-                size: 22,
+                size: 20,
                 color: AppColors.blueDark,
               ),
               const SizedBox(height: 10),
               PoppinsTextView(
                 value:
-                    "File MRI sedang dalam antrean analisis AI.\nAnda akan menerima notifikasi saat hasil siap.",
+                    "Segmentasi tumor 3D & 2D berhasil diproses menggunakan RSU U²-Net+.\nAnda dapat langsung melihat visualisasi dan metrik analisis.",
                 textAlign: TextAlign.center,
-                size: 14,
+                size: 13,
                 color: AppColors.grey,
                 height: 1.5,
               ),
-              const SizedBox(height: 30),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    Get.back();
-                    widget.dashboardController.backToPasienList();
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.blueDark,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () {
+                        Get.back();
+                        widget.dashboardController.backToPasienList();
+                      },
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        side: BorderSide(color: AppColors.blueDark),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      child: PoppinsTextView(
+                        value: "Daftar Pasien",
+                        fontWeight: FontWeight.w600,
+                        size: 14,
+                        color: AppColors.blueDark,
+                      ),
                     ),
                   ),
-                  child: PoppinsTextView(
-                    value: "Selesai",
-                    fontWeight: FontWeight.w600,
-                    size: 15,
-                    color: Colors.white,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () {
+                        Get.back();
+                        if (scanId != null && scanId > 0) {
+                          final userRole = GetStorage().read('role') ?? 'RADIOLOG';
+                          Get.to(() => DetailAnalisisPage(
+                                analysisId: scanId.toString(),
+                                role: userRole.toString(),
+                              ));
+                        } else {
+                          widget.dashboardController.backToPasienList();
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.blueDark,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      child: PoppinsTextView(
+                        value: "Lihat Visualisasi",
+                        fontWeight: FontWeight.w600,
+                        size: 14,
+                        color: Colors.white,
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ),
             ],
           ),
@@ -756,28 +762,19 @@ class _UploadScanMriState extends State<UploadScanMri> {
                         ),
                         SizedBox(height: 8),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                           decoration: BoxDecoration(
+                            color: const Color(0xFFF8FAFC),
                             border: Border.all(color: AppColors.greyDisabled),
                             borderRadius: BorderRadius.circular(8),
                           ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: _selectedModel,
-                              isExpanded: true,
-                              items: const [
-                                DropdownMenuItem(
-                                  value: 'optimisasi',
-                                  child: Text('CKD-TransBTS Optimisasi (L5)'),
-                                ),
-                                DropdownMenuItem(
-                                  value: 'paper',
-                                  child: Text('CKD-TransBTS Paper'),
-                                ),
-                              ],
-                              onChanged: (v) {
-                                if (v != null) setState(() => _selectedModel = v);
-                              },
+                          child: const Text(
+                            'RSU U²-Net+ (Attention Gate)',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.black87,
                             ),
                           ),
                         ),
